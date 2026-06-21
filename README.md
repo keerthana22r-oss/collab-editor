@@ -82,7 +82,6 @@ The frontend expects the API at `http://localhost:8000/api` (see
    including the JSON `content` field.
 
 ## Next step
-
 Once this works end-to-end, move on to Phase 2 in `PROJECT_BRIEF.md`:
 swapping the plain JSON content storage for Yjs, and adding the Django
 Channels WebSocket layer so two browser sessions stay in sync live.
