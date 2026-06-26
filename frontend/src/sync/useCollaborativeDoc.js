@@ -1,10 +1,20 @@
 import { useEffect, useRef, useState } from "react";
 import * as Y from "yjs";
+import {
+  Awareness,
+  applyAwarenessUpdate,
+  encodeAwarenessUpdate,
+} from "y-protocols/awareness";
 
 import { getDocument, updateDocument } from "../api";
+import { getIdentity } from "./identity";
 
 const WS_BASE = import.meta.env.VITE_WS_BASE || "ws://localhost:8000";
 const SNAPSHOT_DELAY_MS = 2000;
+
+// 1-byte message type prefix so the relay can carry both doc updates and
+// awareness (presence/cursor) updates on the same WebSocket connection.
+const MESSAGE_TYPE = { DOC_UPDATE: 0, AWARENESS_UPDATE: 1 };
 
 function base64ToBytes(base64) {
   const binary = atob(base64);
@@ -19,36 +29,21 @@ function bytesToBase64(bytes) {
   return btoa(binary);
 }
 
-/**
- * Wires a shared Y.Doc up to two transports:
- *
- *  - WebSocket: a "dumb relay" connection (see backend/documents/consumers.py)
- *    that rebroadcasts every local Yjs update to other clients currently
- *    viewing the same document. This is what makes edits appear live,
- *    sub-second, for everyone connected right now.
- *
- *  - REST: loads the document's last-persisted state on open, and saves a
- *    debounced full-state snapshot (Y.encodeStateAsUpdate) after edits.
- *    This is what a *newly arriving* client bootstraps from, and what
- *    survives a server restart.
- *
- * Known limitation: a client that connects in the few seconds between
- * someone else's edit and that edit's next debounced snapshot save won't
- * see that edit until the next save fires (or until that peer types again
- * and it gets relayed live). Acceptable for this project's scope; a
- * production system would close this gap with a server-side merged Y.Doc
- * (see the docstring in consumers.py) instead of relying on REST snapshots.
- *
- * Note: each call to this hook owns exactly one Y.Doc for its whole
- * lifetime. The Editor component is mounted with `key={documentId}` (see
- * App.jsx) specifically so that switching documents creates a fresh hook
- * instance -- and a fresh Y.Doc -- rather than reusing one across
- * documents.
- */
+function frame(type, payload) {
+  const message = new Uint8Array(1 + payload.length);
+  message[0] = type;
+  message.set(payload, 1);
+  return message;
+}
+
 export function useCollaborativeDoc(documentId) {
   const ydocRef = useRef(null);
   if (!ydocRef.current) ydocRef.current = new Y.Doc();
   const ydoc = ydocRef.current;
+
+  const awarenessRef = useRef(null);
+  if (!awarenessRef.current) awarenessRef.current = new Awareness(ydoc);
+  const awareness = awarenessRef.current;
 
   const [title, setTitleState] = useState("");
   const [status, setStatus] = useState("loading");
@@ -60,8 +55,21 @@ export function useCollaborativeDoc(documentId) {
     let cancelled = false;
     let ws = null;
     let handleLocalUpdate = null;
+    let handleAwarenessUpdate = null;
 
     setStatus("loading");
+
+    // Set identity immediately into the awareness doc (before the socket
+    // opens) so that PresenceList can show "yourself" right away, and so
+    // there's definitely a local state to broadcast the moment the socket
+    // becomes available.
+    const identity = getIdentity();
+    awareness.setLocalStateField("user", identity);
+    console.log("[presence] local identity set:", identity);
+
+    const send = (type, payload) => {
+      if (ws && ws.readyState === WebSocket.OPEN) ws.send(frame(type, payload));
+    };
 
     const scheduleSnapshot = () => {
       setStatus((current) => (current === "loading" ? current : "unsaved"));
@@ -90,23 +98,46 @@ export function useCollaborativeDoc(documentId) {
       ws = new WebSocket(`${WS_BASE}/ws/documents/${documentId}/`);
       ws.binaryType = "arraybuffer";
 
-      ws.onopen = () => setStatus("connected");
+      ws.onopen = () => {
+        setStatus("connected");
+        console.log("[presence] ws open, broadcasting identity");
+        // Broadcast our presence to everyone else now that the socket is up.
+        send(
+          MESSAGE_TYPE.AWARENESS_UPDATE,
+          encodeAwarenessUpdate(awareness, [awareness.clientID])
+        );
+      };
+
       ws.onclose = () => setStatus("disconnected");
       ws.onerror = () => setStatus("disconnected");
 
       ws.onmessage = (event) => {
-        Y.applyUpdate(ydoc, new Uint8Array(event.data), "remote");
+        const bytes = new Uint8Array(event.data);
+        const type = bytes[0];
+        const payload = bytes.subarray(1);
+        if (type === MESSAGE_TYPE.DOC_UPDATE) {
+          Y.applyUpdate(ydoc, payload, "remote");
+        } else if (type === MESSAGE_TYPE.AWARENESS_UPDATE) {
+          applyAwarenessUpdate(awareness, payload, "remote");
+        }
       };
 
       handleLocalUpdate = (update, origin) => {
-        // Updates tagged "remote" came from applyUpdate above (loaded from
-        // REST, or relayed from another client) -- don't bounce those back
-        // out, only broadcast genuinely local edits.
         if (origin === "remote") return;
-        if (ws.readyState === WebSocket.OPEN) ws.send(update);
+        send(MESSAGE_TYPE.DOC_UPDATE, update);
         scheduleSnapshot();
       };
       ydoc.on("update", handleLocalUpdate);
+
+      handleAwarenessUpdate = ({ added, updated, removed }, origin) => {
+        if (origin === "remote") return;
+        const changedClients = [...added, ...updated, ...removed];
+        send(
+          MESSAGE_TYPE.AWARENESS_UPDATE,
+          encodeAwarenessUpdate(awareness, changedClients)
+        );
+      };
+      awareness.on("update", handleAwarenessUpdate);
     });
 
     return () => {
@@ -114,6 +145,8 @@ export function useCollaborativeDoc(documentId) {
       if (snapshotTimer.current) clearTimeout(snapshotTimer.current);
       if (titleSaveTimer.current) clearTimeout(titleSaveTimer.current);
       if (handleLocalUpdate) ydoc.off("update", handleLocalUpdate);
+      if (handleAwarenessUpdate) awareness.off("update", handleAwarenessUpdate);
+      awareness.setLocalState(null);
       if (ws) ws.close();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -123,13 +156,11 @@ export function useCollaborativeDoc(documentId) {
     setTitleState(value);
     if (titleSaveTimer.current) clearTimeout(titleSaveTimer.current);
     titleSaveTimer.current = setTimeout(() => {
-      updateDocument(documentId, { title: value }).catch(() => {
-        // Non-blocking: a failed title save just means it'll retry on the
-        // next edit. Logged for visibility during local dev.
-        console.error("Failed to save title");
-      });
+      updateDocument(documentId, { title: value }).catch(() =>
+        console.error("Failed to save title")
+      );
     }, SNAPSHOT_DELAY_MS);
   };
 
-  return { ydoc, title, setTitle, status };
+  return { ydoc, awareness, title, setTitle, status };
 }

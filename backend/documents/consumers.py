@@ -3,11 +3,16 @@ from channels.generic.websocket import AsyncWebsocketConsumer
 
 class DocumentConsumer(AsyncWebsocketConsumer):
     """
-    A deliberately "dumb" relay for Yjs CRDT updates.
+    A deliberately "dumb" relay for Yjs CRDT updates and presence/awareness
+    messages alike.
 
-    This consumer never parses the Yjs binary format. It just rebroadcasts
-    every binary message it receives to every *other* client connected to
-    the same document, unmodified.
+    This consumer never parses the binary payloads passing through it. It
+    just rebroadcasts every binary message it receives to every *other*
+    client connected to the same document, unmodified -- the frontend is
+    responsible for framing/distinguishing message kinds (see
+    useCollaborativeDoc.js's MESSAGE_TYPE prefix). Because of that, Phase 3
+    (presence/live cursors) needed zero changes here: it's just more bytes
+    flowing through the same relay.
 
     Why a dumb relay is enough: Yjs updates are CRDT operations -- applying
     them in any order, even with overlap, converges to the same document

@@ -1,8 +1,12 @@
 import Collaboration from "@tiptap/extension-collaboration";
+import CollaborationCursor from "@tiptap/extension-collaboration-cursor";
 import { EditorContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
+import { useRef } from "react";
 
+import { getIdentity } from "../sync/identity";
 import { useCollaborativeDoc } from "../sync/useCollaborativeDoc";
+import PresenceList from "./PresenceList";
 
 const STATUS_LABEL = {
   loading: "Loading…",
@@ -14,7 +18,10 @@ const STATUS_LABEL = {
 };
 
 export default function Editor({ documentId, onBack }) {
-  const { ydoc, title, setTitle, status } = useCollaborativeDoc(documentId);
+  const { ydoc, awareness, title, setTitle, status } = useCollaborativeDoc(documentId);
+
+  // Stable for this component's lifetime -- not regenerated on re-render.
+  const identity = useRef(getIdentity()).current;
 
   const editor = useEditor(
     {
@@ -25,6 +32,10 @@ export default function Editor({ documentId, onBack }) {
         // gap for now -- Ctrl+Z won't do anything meaningful yet.)
         StarterKit.configure({ history: false }),
         Collaboration.configure({ document: ydoc }),
+        CollaborationCursor.configure({
+          provider: { awareness },
+          user: identity,
+        }),
       ],
     },
     [ydoc]
@@ -36,9 +47,12 @@ export default function Editor({ documentId, onBack }) {
         <button className="link-button" onClick={onBack}>
           &larr; All documents
         </button>
-        <span className={`save-status save-status--${status}`}>
-          {STATUS_LABEL[status] ?? status}
-        </span>
+        <div className="editor-topbar-right">
+          <PresenceList awareness={awareness} />
+          <span className={`save-status save-status--${status}`}>
+            {STATUS_LABEL[status] ?? status}
+          </span>
+        </div>
       </div>
 
       <input
