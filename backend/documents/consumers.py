@@ -1,44 +1,37 @@
 from channels.generic.websocket import AsyncWebsocketConsumer
+from channels.db import database_sync_to_async
+from django.contrib.auth.models import AnonymousUser
+
+
+@database_sync_to_async
+def get_role(document_id, user):
+    """Return the user's role string, or None if they have no access."""
+    if isinstance(user, AnonymousUser) or not user.is_authenticated:
+        return None
+    from documents.models import Document, DocumentCollaborator
+    try:
+        doc = Document.objects.get(pk=document_id)
+    except Document.DoesNotExist:
+        return None
+    if doc.owner == user:
+        return "owner"
+    collab = DocumentCollaborator.objects.filter(document=doc, user=user).first()
+    return collab.role if collab else None
 
 
 class DocumentConsumer(AsyncWebsocketConsumer):
-    """
-    A deliberately "dumb" relay for Yjs CRDT updates and presence/awareness
-    messages alike.
-
-    This consumer never parses the binary payloads passing through it. It
-    just rebroadcasts every binary message it receives to every *other*
-    client connected to the same document, unmodified -- the frontend is
-    responsible for framing/distinguishing message kinds (see
-    useCollaborativeDoc.js's MESSAGE_TYPE prefix). Because of that, Phase 3
-    (presence/live cursors) needed zero changes here: it's just more bytes
-    flowing through the same relay.
-
-    Why a dumb relay is enough: Yjs updates are CRDT operations -- applying
-    them in any order, even with overlap, converges to the same document
-    state (see y-doc.on('update', ...) on the frontend). The server doesn't
-    need to understand *what* changed, only that every connected client
-    needs to eventually see every update. That's a much smaller, easier to
-    reason about contract than reimplementing Yjs's full sync protocol
-    server-side.
-
-    What this trades away: a brand-new client that joins mid-session gets
-    nothing from this socket until someone else types. Bootstrapping a
-    joining client with the document's *existing* content is handled
-    separately, over the REST API (see useCollaborativeDoc.js on the
-    frontend, which loads persisted state via GET before opening this
-    socket). Production systems like Hocuspocus or the reference
-    y-websocket server instead keep a live, merged Y.Doc in server memory
-    so they can answer "what's the current state" directly over the socket
-    -- that needs a Yjs runtime on the server (e.g. the y-py bindings),
-    which this project deliberately avoids to keep the backend pure Python/
-    Django. Worth bringing up as a "how would you scale this further"
-    answer.
-    """
-
     async def connect(self):
         self.document_id = self.scope["url_route"]["kwargs"]["document_id"]
         self.group_name = f"document_{self.document_id}"
+        user = self.scope.get("user", AnonymousUser())
+
+        # Viewers CAN connect (read-only); the write check is in receive().
+        role = await get_role(self.document_id, user)
+        if role is None:
+            await self.close()
+            return
+
+        self.role = role
         await self.channel_layer.group_add(self.group_name, self.channel_name)
         await self.accept()
 
@@ -48,18 +41,21 @@ class DocumentConsumer(AsyncWebsocketConsumer):
     async def receive(self, text_data=None, bytes_data=None):
         if bytes_data is None:
             return
+
+        MSG_DOC = 0
+        MSG_AWARENESS = 1
+        msg_type = bytes_data[0]
+
+        # Block doc edits from viewers; allow awareness (cursor) messages through.
+        if msg_type == MSG_DOC and self.role == "viewer":
+            return
+
         await self.channel_layer.group_send(
             self.group_name,
-            {
-                "type": "relay.update",
-                "data": bytes_data,
-                "sender_channel": self.channel_name,
-            },
+            {"type": "relay.update", "data": bytes_data, "sender": self.channel_name},
         )
 
     async def relay_update(self, event):
-        # Don't echo a client's own update back to itself -- it already
-        # has this change locally, since it's the one that made it.
-        if event["sender_channel"] == self.channel_name:
+        if event["sender"] == self.channel_name:
             return
         await self.send(bytes_data=event["data"])

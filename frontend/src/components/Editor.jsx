@@ -2,40 +2,28 @@ import Collaboration from "@tiptap/extension-collaboration";
 import CollaborationCursor from "@tiptap/extension-collaboration-cursor";
 import { EditorContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
-import { useRef } from "react";
+import { useState } from "react";
 
-import { getIdentity } from "../sync/identity";
 import { useCollaborativeDoc } from "../sync/useCollaborativeDoc";
 import PresenceList from "./PresenceList";
+import ShareModal from "./ShareModal";
 
 const STATUS_LABEL = {
-  loading: "Loading…",
-  connected: "Synced",
-  unsaved: "Unsaved changes",
-  saving: "Saving…",
-  disconnected: "Offline — changes saved locally",
-  error: "Couldn't save",
+  loading: "Loading…", connected: "Synced", unsaved: "Unsaved",
+  saving: "Saving…", disconnected: "Offline", error: "Error",
 };
 
 export default function Editor({ documentId, onBack }) {
-  const { ydoc, awareness, title, setTitle, status } = useCollaborativeDoc(documentId);
-
-  // Stable for this component's lifetime -- not regenerated on re-render.
-  const identity = useRef(getIdentity()).current;
+  const { ydoc, awareness, presenceUsers, title, setTitle, status } =
+    useCollaborativeDoc(documentId);
+  const [sharing, setSharing] = useState(false);
 
   const editor = useEditor(
     {
       extensions: [
-        // Yjs owns undo/redo history once Collaboration is active; the
-        // built-in history extension would fight with it. (Real undo/redo
-        // support via @tiptap/extension-collaboration-history is a known
-        // gap for now -- Ctrl+Z won't do anything meaningful yet.)
         StarterKit.configure({ history: false }),
         Collaboration.configure({ document: ydoc }),
-        CollaborationCursor.configure({
-          provider: { awareness },
-          user: identity,
-        }),
+        CollaborationCursor.configure({ provider: { awareness } }),
       ],
     },
     [ydoc]
@@ -44,69 +32,40 @@ export default function Editor({ documentId, onBack }) {
   return (
     <div className="editor-page">
       <div className="editor-topbar">
-        <button className="link-button" onClick={onBack}>
-          &larr; All documents
-        </button>
+        <button className="link-button" onClick={onBack}>← All documents</button>
         <div className="editor-topbar-right">
-          <PresenceList awareness={awareness} />
-          <span className={`save-status save-status--${status}`}>
-            {STATUS_LABEL[status] ?? status}
-          </span>
+          <PresenceList users={presenceUsers} />
+          <button className="ghost-button" onClick={() => setSharing(true)}>Share</button>
+          <span className={`save-status save-status--${status}`}>{STATUS_LABEL[status] ?? status}</span>
         </div>
       </div>
 
       <input
         className="editor-title"
         value={title}
-        onChange={(event) => setTitle(event.target.value)}
+        onChange={(e) => setTitle(e.target.value)}
         placeholder="Untitled document"
       />
 
       {editor && (
         <div className="editor-toolbar">
-          <button
-            type="button"
-            className={editor.isActive("bold") ? "active" : ""}
-            onClick={() => editor.chain().focus().toggleBold().run()}
-          >
-            B
-          </button>
-          <button
-            type="button"
-            className={editor.isActive("italic") ? "active" : ""}
-            onClick={() => editor.chain().focus().toggleItalic().run()}
-          >
-            <em>i</em>
-          </button>
-          <button
-            type="button"
-            className={editor.isActive("heading", { level: 2 }) ? "active" : ""}
-            onClick={() =>
-              editor.chain().focus().toggleHeading({ level: 2 }).run()
-            }
-          >
-            H2
-          </button>
-          <button
-            type="button"
-            className={editor.isActive("bulletList") ? "active" : ""}
-            onClick={() => editor.chain().focus().toggleBulletList().run()}
-          >
-            • List
-          </button>
-          <button
-            type="button"
-            className={editor.isActive("orderedList") ? "active" : ""}
-            onClick={() => editor.chain().focus().toggleOrderedList().run()}
-          >
-            1. List
-          </button>
+          {[
+            { label: "B", cmd: () => editor.chain().focus().toggleBold().run(), active: editor.isActive("bold") },
+            { label: "i", cmd: () => editor.chain().focus().toggleItalic().run(), active: editor.isActive("italic") },
+            { label: "H2", cmd: () => editor.chain().focus().toggleHeading({ level: 2 }).run(), active: editor.isActive("heading", { level: 2 }) },
+            { label: "• List", cmd: () => editor.chain().focus().toggleBulletList().run(), active: editor.isActive("bulletList") },
+            { label: "1. List", cmd: () => editor.chain().focus().toggleOrderedList().run(), active: editor.isActive("orderedList") },
+          ].map(({ label, cmd, active }) => (
+            <button key={label} type="button" className={active ? "active" : ""} onClick={cmd}>{label}</button>
+          ))}
         </div>
       )}
 
       <div className="editor-page-surface">
         <EditorContent editor={editor} />
       </div>
+
+      {sharing && <ShareModal documentId={documentId} onClose={() => setSharing(false)} />}
     </div>
   );
 }

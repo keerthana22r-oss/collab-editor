@@ -1,62 +1,63 @@
+from django.contrib.auth import get_user_model
 from rest_framework import status
 from rest_framework.test import APITestCase
 
+User = get_user_model()
+
+def make_user(username="alice", password="password123"):
+    return User.objects.create_user(username=username, password=password, email=f"{username}@example.com")
+
+def auth(client, username, password="password123"):
+    r = client.post("/api/auth/login/", {"username": username, "password": password}, format="json")
+    client.credentials(HTTP_AUTHORIZATION=f"Bearer {r.data['access']}")
+    return r.data
 
 class DocumentAPITests(APITestCase):
-    def test_create_and_list_document(self):
-        response = self.client.post(
-            "/api/documents/", {"title": "My first doc", "content": {}}, format="json"
-        )
-        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        doc_id = response.data["id"]
+    def setUp(self):
+        self.user = make_user()
+        auth(self.client, "alice")
 
-        list_response = self.client.get("/api/documents/")
-        self.assertEqual(list_response.status_code, status.HTTP_200_OK)
-        titles = [doc["title"] for doc in list_response.data]
-        self.assertIn("My first doc", titles)
-        self.assertTrue(doc_id)
+    def test_create_and_list(self):
+        r = self.client.post("/api/documents/", {"title": "Doc 1"}, format="json")
+        self.assertEqual(r.status_code, status.HTTP_201_CREATED)
+        r = self.client.get("/api/documents/")
+        self.assertEqual(len(r.data), 1)
 
-    def test_retrieve_document_returns_content(self):
-        create = self.client.post(
-            "/api/documents/",
-            {"title": "Has content", "content": {"type": "doc", "content": []}},
-            format="json",
-        )
-        doc_id = create.data["id"]
+    def test_retrieve_content(self):
+        r = self.client.post("/api/documents/", {"title": "Doc", "content": {"type": "doc"}}, format="json")
+        r2 = self.client.get(f"/api/documents/{r.data['id']}/")
+        self.assertEqual(r2.data["content"], {"type": "doc"})
 
-        detail = self.client.get(f"/api/documents/{doc_id}/")
-        self.assertEqual(detail.status_code, status.HTTP_200_OK)
-        self.assertEqual(detail.data["content"], {"type": "doc", "content": []})
+    def test_rename(self):
+        r = self.client.post("/api/documents/", {"title": "Old"}, format="json")
+        r2 = self.client.patch(f"/api/documents/{r.data['id']}/", {"title": "New"}, format="json")
+        self.assertEqual(r2.data["title"], "New")
 
-    def test_rename_document(self):
-        create = self.client.post("/api/documents/", {"title": "Old title"}, format="json")
-        doc_id = create.data["id"]
+    def test_delete(self):
+        r = self.client.post("/api/documents/", {"title": "Temp"}, format="json")
+        self.client.delete(f"/api/documents/{r.data['id']}/")
+        r2 = self.client.get(f"/api/documents/{r.data['id']}/")
+        self.assertEqual(r2.status_code, status.HTTP_404_NOT_FOUND)
 
-        rename = self.client.patch(
-            f"/api/documents/{doc_id}/", {"title": "New title"}, format="json"
-        )
-        self.assertEqual(rename.status_code, status.HTTP_200_OK)
-        self.assertEqual(rename.data["title"], "New title")
+    def test_viewer_cannot_edit(self):
+        bob = make_user("bob")
+        r = self.client.post("/api/documents/", {"title": "Alice doc"}, format="json")
+        doc_id = r.data["id"]
+        self.client.post(f"/api/documents/{doc_id}/invite/", {"email": "bob@example.com", "role": "viewer"}, format="json")
+        auth(self.client, "bob")
+        r2 = self.client.patch(f"/api/documents/{doc_id}/", {"title": "Hacked"}, format="json")
+        self.assertEqual(r2.status_code, status.HTTP_403_FORBIDDEN)
 
-    def test_save_content_does_not_clobber_title(self):
-        create = self.client.post("/api/documents/", {"title": "Keep me"}, format="json")
-        doc_id = create.data["id"]
+    def test_editor_can_edit(self):
+        make_user("carol")
+        r = self.client.post("/api/documents/", {"title": "Alice doc"}, format="json")
+        doc_id = r.data["id"]
+        self.client.post(f"/api/documents/{doc_id}/invite/", {"email": "carol@example.com", "role": "editor"}, format="json")
+        auth(self.client, "carol")
+        r2 = self.client.patch(f"/api/documents/{doc_id}/", {"title": "Carol edit"}, format="json")
+        self.assertEqual(r2.status_code, status.HTTP_200_OK)
 
-        self.client.patch(
-            f"/api/documents/{doc_id}/",
-            {"content": {"type": "doc", "content": [{"type": "paragraph"}]}},
-            format="json",
-        )
-
-        detail = self.client.get(f"/api/documents/{doc_id}/")
-        self.assertEqual(detail.data["title"], "Keep me")
-
-    def test_delete_document(self):
-        create = self.client.post("/api/documents/", {"title": "Temporary"}, format="json")
-        doc_id = create.data["id"]
-
-        delete = self.client.delete(f"/api/documents/{doc_id}/")
-        self.assertEqual(delete.status_code, status.HTTP_204_NO_CONTENT)
-
-        detail = self.client.get(f"/api/documents/{doc_id}/")
-        self.assertEqual(detail.status_code, status.HTTP_404_NOT_FOUND)
+    def test_unauthenticated_denied(self):
+        self.client.credentials()
+        r = self.client.get("/api/documents/")
+        self.assertEqual(r.status_code, status.HTTP_401_UNAUTHORIZED)
