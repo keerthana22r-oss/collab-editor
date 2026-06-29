@@ -10,7 +10,6 @@ What's built so far
 
 ✅ Phase 1 — Single-user editor
 
-
 Django REST Framework backend with full document CRUD API
 React + Vite frontend with Tiptap rich text editor
 Documents saved to and loaded from a database (SQLite locally, Postgres in production)
