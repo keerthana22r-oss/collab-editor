@@ -6,7 +6,6 @@ Live demo: (deploy link goes here once deployed to Render/Railway)
 
 GitHub: (your repo link)
 
-
 What's built so far
 
 ✅ Phase 1 — Single-user editor
