@@ -10,30 +10,6 @@
 
 🔗 Coming Soon
 
-## 📂 Repository
-
-🔗 Your GitHub Repository Link
-
----
-
-# 📸 Preview
-
-> Replace these placeholders with screenshots or GIFs.
-
-| Login | Dashboard |
-|-------|-----------|
-| ![](screenshots/login.png) | ![](screenshots/dashboard.png) |
-
-| Collaborative Editor |
-|----------------------|
-| ![](screenshots/editor.png) |
-
-| Live Cursors |
-|--------------|
-| ![](screenshots/cursors.gif) |
-
----
-
 # ✨ Features
 
 ## 📝 Rich Text Editing
@@ -352,14 +328,6 @@ This project helped me gain hands-on experience with:
 **Keerthana K R**
 
 Aspiring Software Engineer passionate about building scalable full-stack applications with modern web technologies.
-
-### Connect with Me
-
-- GitHub
-- LinkedIn
-- Portfolio
-
----
 
 # ⭐ Support
 
